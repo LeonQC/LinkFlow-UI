@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+
+# Legacy nested app paths kept here in case local tools recreate them.
+LinkFlow UI Design/node_modules/
+LinkFlow UI Design/dist/
+LinkFlow UI Design/.env
