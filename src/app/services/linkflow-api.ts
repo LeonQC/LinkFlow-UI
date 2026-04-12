@@ -1,3 +1,5 @@
+export type LinkStatus = 'active' | 'paused' | 'blocked' | 'expired';
+
 export interface Link {
   id: string;
   slug?: string;
@@ -6,19 +8,41 @@ export interface Link {
   title: string;
   channel?: string;
   clicks: number;
-  uniqueVisitors?: number;
-  status: 'active' | 'paused' | 'blocked' | 'expired';
+  uniqueVisitors: number;
+  status: LinkStatus;
   createdAt: string;
   expiresAt?: string;
 }
 
+export interface LinkPageMeta {
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+  hasNext: boolean;
+}
+
+export interface LinkListParams {
+  page?: number;
+  size?: number;
+  status?: LinkStatus | 'all';
+  search?: string;
+  sort?: string;
+}
+
+export interface LinkListResponse {
+  items: Link[];
+  page: LinkPageMeta;
+}
+
 export interface DashboardStats {
   totalLinks: number;
-  totalClicks: number;
   activeLinks: number;
-  clicksToday: number;
-  clicksGrowth: number;
-  linksGrowth: number;
+  totalClicks: number;
+  uniqueVisitors: number;
+  clicksToday?: number;
+  clicksGrowth?: number;
+  linksGrowth?: number;
 }
 
 export interface Alert {
@@ -50,19 +74,42 @@ export interface RegisterPayload {
   password: string;
 }
 
+export interface LoginPayload {
+  email: string;
+  password: string;
+}
+
+export interface AuthSession {
+  accessToken: string;
+  tokenType: string;
+  expiresAt: string;
+  refreshToken: string;
+  refreshExpiresAt: string;
+  user: AuthUser;
+}
+
 export interface CreateLinkPayload {
   originalUrl: string;
   title: string;
   customSlug?: string;
   channel?: string;
   expiresAt?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface UpdateLinkPayload {
   title?: string;
   originalUrl?: string;
+  customSlug?: string;
+  channel?: string;
   expiresAt?: string | null;
-  status?: Link['status'];
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateLinkStatusPayload {
+  status: LinkStatus;
 }
 
 export interface BackendHealth {
@@ -72,7 +119,7 @@ export interface BackendHealth {
 
 interface ApiEnvelope<T> {
   request_id?: string;
-  data: T;
+  data: T | null;
   error: {
     code: string;
     message: string;
@@ -81,8 +128,33 @@ interface ApiEnvelope<T> {
   meta?: Record<string, unknown>;
 }
 
+interface RequestResult<T> {
+  response: Response;
+  payload: ApiEnvelope<T> | T | null;
+  requestId?: string;
+}
+
+interface UnwrappedResult<T> {
+  data: T;
+  meta?: Record<string, unknown>;
+  requestId?: string;
+}
+
+type RawRecord = Record<string, unknown>;
+
 const apiBaseUrl = ((import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://localhost:8080').replace(/\/$/, '');
-const sessionLinksKey = 'linkflow.session.created-links';
+const authStorageKeys = {
+  accessToken: 'accessToken',
+  tokenType: 'tokenType',
+  tokenExpiresAt: 'tokenExpiresAt',
+  refreshToken: 'refreshToken',
+  refreshExpiresAt: 'refreshExpiresAt',
+  userName: 'userName',
+  userEmail: 'userEmail',
+  userRole: 'userRole',
+} as const;
+
+let refreshPromise: Promise<AuthSession> | null = null;
 
 export const backendCapabilities = {
   health: {
@@ -94,32 +166,52 @@ export const backendCapabilities = {
     summary: 'Registration is wired to POST /api/v1/auth/register.',
   },
   authLogin: {
-    available: false,
-    summary: 'Login endpoint is not implemented in the current backend snapshot.',
+    available: true,
+    summary: 'Login is wired to POST /api/v1/auth/login and returns access and refresh tokens.',
+  },
+  authRefresh: {
+    available: true,
+    summary: 'Session refresh is wired to POST /api/v1/auth/refresh.',
+  },
+  authMe: {
+    available: true,
+    summary: 'Current user lookup is wired to GET /api/v1/auth/me.',
   },
   linksCreate: {
     available: true,
-    summary: 'Short URL creation is wired to POST /api/short-urls.',
+    summary: 'Short URL creation is wired to POST /api/v1/links.',
   },
   linksList: {
-    available: false,
-    summary: 'The backend does not expose a list endpoint yet, so the UI can only show links created from this browser session.',
+    available: true,
+    summary: 'Short link listing is wired to GET /api/v1/links with page, size, status, search, and sort.',
   },
   linkDetail: {
-    available: false,
-    summary: 'The backend does not expose a detail endpoint yet.',
+    available: true,
+    summary: 'Short link detail is wired to GET /api/v1/links/{link_id}.',
   },
   linkUpdate: {
-    available: false,
-    summary: 'The backend does not expose an update endpoint yet.',
+    available: true,
+    summary: 'Short link editing is wired to PATCH /api/v1/links/{link_id}.',
+  },
+  linkStatus: {
+    available: true,
+    summary: 'Short link status changes are wired to PATCH /api/v1/links/{link_id}/status.',
   },
   linkDelete: {
-    available: false,
-    summary: 'The backend does not expose a delete endpoint yet.',
+    available: true,
+    summary: 'Short link deletion is wired to DELETE /api/v1/links/{link_id}.',
+  },
+  linkQrCode: {
+    available: true,
+    summary: 'QR code PNG retrieval is wired to GET /api/v1/links/{link_id}/qrcode with Authorization.',
   },
   dashboard: {
-    available: false,
-    summary: 'The backend does not expose dashboard summary metrics yet.',
+    available: true,
+    summary: 'Dashboard summary is wired to GET /api/v1/dashboard/summary.',
+  },
+  hotLinks: {
+    available: true,
+    summary: 'Realtime hot links are wired to GET /api/v1/analytics/realtime/hot-links.',
   },
   alerts: {
     available: false,
@@ -168,55 +260,110 @@ export function isFeatureUnavailableError(error: unknown): error is ApiFeatureUn
 }
 
 function getAccessToken(): string | null {
-  return localStorage.getItem('accessToken');
+  return typeof window === 'undefined' ? null : localStorage.getItem(authStorageKeys.accessToken);
 }
 
-function toIsoDate(value?: string): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-
-  if (value.includes('T')) {
-    return value;
-  }
-
-  return `${value}T00:00:00Z`;
+function getRefreshToken(): string | null {
+  return typeof window === 'undefined' ? null : localStorage.getItem(authStorageKeys.refreshToken);
 }
 
-function readSessionLinks(): Link[] {
+function getTokenExpiresAt(): number | null {
   if (typeof window === 'undefined') {
-    return [];
+    return null;
   }
 
-  const raw = window.sessionStorage.getItem(sessionLinksKey);
+  const raw = localStorage.getItem(authStorageKeys.tokenExpiresAt);
   if (!raw) {
-    return [];
+    return null;
   }
 
-  try {
-    const parsed = JSON.parse(raw) as Link[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
-function writeSessionLinks(links: Link[]): void {
+function isTokenExpiringSoon(): boolean {
+  const expiresAt = getTokenExpiresAt();
+  if (!expiresAt) {
+    return false;
+  }
+
+  return expiresAt <= Date.now() + 30_000;
+}
+
+function shouldBypassRefresh(path: string): boolean {
+  return path.startsWith('/api/v1/auth/login')
+    || path.startsWith('/api/v1/auth/register')
+    || path.startsWith('/api/v1/auth/refresh')
+    || path.startsWith('/api/v1/auth/logout');
+}
+
+function redirectToLogin(): void {
   if (typeof window === 'undefined') {
     return;
   }
 
-  window.sessionStorage.setItem(sessionLinksKey, JSON.stringify(links));
+  if (window.location.pathname !== '/auth/login') {
+    window.location.assign('/auth/login');
+  }
 }
 
-function upsertSessionLink(link: Link): void {
-  const existing = readSessionLinks();
-  const next = [link, ...existing.filter((item) => item.id !== link.id)];
-  next.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  writeSessionLinks(next);
+export function clearAuthSession(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  Object.values(authStorageKeys).forEach((key) => localStorage.removeItem(key));
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export function storeAuthSession(session: AuthSession): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  localStorage.setItem(authStorageKeys.accessToken, session.accessToken);
+  localStorage.setItem(authStorageKeys.tokenType, session.tokenType);
+  localStorage.setItem(authStorageKeys.tokenExpiresAt, session.expiresAt);
+  localStorage.setItem(authStorageKeys.refreshToken, session.refreshToken);
+  localStorage.setItem(authStorageKeys.refreshExpiresAt, session.refreshExpiresAt);
+  localStorage.setItem(authStorageKeys.userName, session.user.username);
+  localStorage.setItem(authStorageKeys.userEmail, session.user.email);
+  localStorage.setItem(authStorageKeys.userRole, session.user.role);
+}
+
+export function hasAuthSession(): boolean {
+  return Boolean(getAccessToken() || getRefreshToken());
+}
+
+function toIsoDate(value?: string | null): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed.includes('T')) {
+    return `${trimmed}T00:00:00Z`;
+  }
+
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(trimmed)) {
+    return `${trimmed}:00Z`;
+  }
+
+  return `${trimmed}Z`;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (value === null || value === undefined || value === '') {
+    return undefined;
+  }
+
+  return String(value);
+}
+
+async function sendRawRequest(path: string, init: RequestInit = {}, includeAuthorization = true): Promise<Response> {
   const headers = new Headers(init.headers);
 
   if (!headers.has('Content-Type') && init.body) {
@@ -224,14 +371,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   const accessToken = getAccessToken();
-  if (accessToken && !headers.has('Authorization')) {
+  if (includeAuthorization && accessToken && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${accessToken}`);
   }
 
-  let response: Response;
-
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
+    return await fetch(`${apiBaseUrl}${path}`, {
       ...init,
       headers,
     });
@@ -243,9 +388,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       error instanceof Error ? { cause: error.message } : {},
     );
   }
+}
 
-  const requestId = response.headers.get('X-Request-Id') ?? undefined;
-  const payload = await response.json().catch(() => null) as ApiEnvelope<T> | T | null;
+async function sendRequest<T>(path: string, init: RequestInit = {}, includeAuthorization = true): Promise<RequestResult<T>> {
+  const response = await sendRawRequest(path, init, includeAuthorization);
+
+  return {
+    response,
+    requestId: response.headers.get('X-Request-Id') ?? undefined,
+    payload: await response.json().catch(() => null) as ApiEnvelope<T> | T | null,
+  };
+}
+
+function unwrapResult<T>(result: RequestResult<T>): UnwrappedResult<T> {
+  const { response, payload, requestId } = result;
 
   if (!response.ok) {
     if (payload && typeof payload === 'object' && 'error' in payload && (payload as ApiEnvelope<T>).error) {
@@ -274,20 +430,199 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (payload && typeof payload === 'object' && 'data' in payload) {
-    return (payload as ApiEnvelope<T>).data;
+    const envelope = payload as ApiEnvelope<T>;
+    return {
+      data: envelope.data as T,
+      meta: envelope.meta,
+      requestId: envelope.request_id ?? requestId,
+    };
   }
 
-  return payload as T;
+  return {
+    data: payload as T,
+    requestId,
+  };
 }
 
-function mapAuthUser(source: Record<string, unknown>): AuthUser {
+function unwrapPayload<T>(result: RequestResult<T>): T {
+  return unwrapResult(result).data;
+}
+
+async function parseBlobError(response: Response): Promise<ApiClientError> {
+  const requestId = response.headers.get('X-Request-Id') ?? undefined;
+  const contentType = response.headers.get('content-type') ?? '';
+
+  if (contentType.includes('application/json')) {
+    const payload = await response.json().catch(() => null) as ApiEnvelope<unknown> | null;
+    if (payload?.error) {
+      return new ApiClientError(
+        response.status,
+        payload.error.code ?? 'HTTP_ERROR',
+        payload.error.message ?? `Request failed with status ${response.status}.`,
+        payload.error.details ?? {},
+        payload.request_id ?? requestId,
+      );
+    }
+  }
+
+  return new ApiClientError(response.status, 'HTTP_ERROR', `Request failed with status ${response.status}.`, {}, requestId);
+}
+
+async function refreshAuthSession(): Promise<AuthSession> {
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    throw new ApiClientError(401, 'MISSING_REFRESH_TOKEN', 'No refresh token is available.');
+  }
+
+  refreshPromise = (async () => {
+    const result = await sendRequest<Record<string, unknown>>(
+      '/api/v1/auth/refresh',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          refresh_token: refreshToken,
+        }),
+      },
+      false,
+    );
+
+    const session = mapAuthSession(unwrapPayload(result));
+    storeAuthSession(session);
+    return session;
+  })();
+
+  try {
+    return await refreshPromise;
+  } finally {
+    refreshPromise = null;
+  }
+}
+
+async function requestInternal<T>(path: string, init: RequestInit = {}, allowRefreshRetry = true): Promise<T> {
+  const result = await sendRequest<T>(path, init, true);
+
+  if (result.response.status === 401 && allowRefreshRetry && !shouldBypassRefresh(path) && getRefreshToken()) {
+    try {
+      await refreshAuthSession();
+    } catch (error) {
+      clearAuthSession();
+      redirectToLogin();
+      throw error;
+    }
+
+    return requestInternal<T>(path, init, false);
+  }
+
+  return unwrapPayload(result);
+}
+
+async function requestWithMetaInternal<T>(path: string, init: RequestInit = {}, allowRefreshRetry = true): Promise<UnwrappedResult<T>> {
+  const result = await sendRequest<T>(path, init, true);
+
+  if (result.response.status === 401 && allowRefreshRetry && !shouldBypassRefresh(path) && getRefreshToken()) {
+    try {
+      await refreshAuthSession();
+    } catch (error) {
+      clearAuthSession();
+      redirectToLogin();
+      throw error;
+    }
+
+    return requestWithMetaInternal<T>(path, init, false);
+  }
+
+  return unwrapResult(result);
+}
+
+async function requestBlobInternal(path: string, init: RequestInit = {}, allowRefreshRetry = true): Promise<Blob> {
+  const response = await sendRawRequest(path, init, true);
+
+  if (response.status === 401 && allowRefreshRetry && !shouldBypassRefresh(path) && getRefreshToken()) {
+    try {
+      await refreshAuthSession();
+    } catch (error) {
+      clearAuthSession();
+      redirectToLogin();
+      throw error;
+    }
+
+    return requestBlobInternal(path, init, false);
+  }
+
+  if (!response.ok) {
+    throw await parseBlobError(response);
+  }
+
+  return response.blob();
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (!shouldBypassRefresh(path) && getRefreshToken() && isTokenExpiringSoon()) {
+    try {
+      await refreshAuthSession();
+    } catch {
+      clearAuthSession();
+      redirectToLogin();
+    }
+  }
+
+  return requestInternal<T>(path, init, true);
+}
+
+async function requestWithMeta<T>(path: string, init: RequestInit = {}): Promise<UnwrappedResult<T>> {
+  if (!shouldBypassRefresh(path) && getRefreshToken() && isTokenExpiringSoon()) {
+    try {
+      await refreshAuthSession();
+    } catch {
+      clearAuthSession();
+      redirectToLogin();
+    }
+  }
+
+  return requestWithMetaInternal<T>(path, init, true);
+}
+
+async function requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  if (!shouldBypassRefresh(path) && getRefreshToken() && isTokenExpiringSoon()) {
+    try {
+      await refreshAuthSession();
+    } catch {
+      clearAuthSession();
+      redirectToLogin();
+    }
+  }
+
+  return requestBlobInternal(path, init, true);
+}
+
+function mapAuthUser(source: RawRecord): AuthUser {
   return {
     id: String(source.id),
     email: String(source.email),
     username: String(source.username),
-    role: String(source.role),
-    status: source.status ? String(source.status) : undefined,
-    createdAt: source.created_at ? String(source.created_at) : undefined,
+    role: String(source.role ?? 'user'),
+    status: normalizeOptionalString(source.status),
+    createdAt: normalizeOptionalString(source.created_at),
+  };
+}
+
+function mapAuthSession(source: RawRecord): AuthSession {
+  const userSource = source.user;
+  if (!userSource || typeof userSource !== 'object') {
+    throw new ApiClientError(500, 'INVALID_AUTH_RESPONSE', 'Authentication response is missing user information.');
+  }
+
+  return {
+    accessToken: String(source.access_token),
+    tokenType: String(source.token_type ?? 'Bearer'),
+    expiresAt: String(source.expires_at ?? ''),
+    refreshToken: String(source.refresh_token),
+    refreshExpiresAt: String(source.refresh_expires_at ?? ''),
+    user: mapAuthUser(userSource as RawRecord),
   };
 }
 
@@ -300,22 +635,112 @@ function buildDefaultTitle(url: string): string {
   }
 }
 
-function mapCreatedLink(source: Record<string, unknown>, payload: CreateLinkPayload): Link {
-  const slug = String(source.slug ?? source.id ?? Date.now());
-  const rawShortUrl = String(source.short_url ?? source.shortUrl ?? `/api/short-urls/${slug}`);
+function readNumber(value: unknown, fallback = 0): number {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readLinkStatus(value: unknown): LinkStatus {
+  if (value === 'paused' || value === 'blocked' || value === 'expired') {
+    return value;
+  }
+
+  return 'active';
+}
+
+function mapLink(source: RawRecord): Link {
+  const originalUrl = String(source.long_url ?? source.longUrl ?? source.originalUrl ?? '');
+  const slug = normalizeOptionalString(source.slug);
+  const id = String(source.id ?? slug ?? '');
+  const title = normalizeOptionalString(source.title) ?? (originalUrl ? buildDefaultTitle(originalUrl) : slug ?? id);
 
   return {
-    id: slug,
+    id,
     slug,
-    shortUrl: resolveShortUrl(rawShortUrl),
-    originalUrl: String(source.long_url ?? source.longUrl ?? payload.originalUrl),
+    shortUrl: String(source.short_url ?? source.shortUrl ?? (slug ? `/r/${slug}` : '')),
+    originalUrl,
+    title,
+    channel: normalizeOptionalString(source.channel),
+    clicks: readNumber(source.click_count ?? source.clickCount ?? source.clicks),
+    uniqueVisitors: readNumber(source.unique_visitors ?? source.uniqueVisitors),
+    status: readLinkStatus(source.status),
+    createdAt: String(source.created_at ?? source.createdAt ?? new Date().toISOString()),
+    expiresAt: normalizeOptionalString(source.expires_at ?? source.expiresAt),
+  };
+}
+
+function mapDashboardStats(source: RawRecord): DashboardStats {
+  return {
+    totalLinks: readNumber(source.total_links ?? source.totalLinks),
+    activeLinks: readNumber(source.active_links ?? source.activeLinks),
+    totalClicks: readNumber(source.total_clicks ?? source.totalClicks),
+    uniqueVisitors: readNumber(source.unique_visitors ?? source.uniqueVisitors),
+    clicksToday: 0,
+    clicksGrowth: 0,
+    linksGrowth: 0,
+  };
+}
+
+function mapLinkPageMeta(meta?: Record<string, unknown>, fallbackParams?: LinkListParams): LinkPageMeta {
+  const pageSource = meta?.page && typeof meta.page === 'object' ? meta.page as RawRecord : {};
+
+  return {
+    page: readNumber(pageSource.page, fallbackParams?.page ?? 1),
+    size: readNumber(pageSource.size, fallbackParams?.size ?? 20),
+    totalElements: readNumber(pageSource.total_elements ?? pageSource.totalElements),
+    totalPages: readNumber(pageSource.total_pages ?? pageSource.totalPages, 1),
+    hasNext: Boolean(pageSource.has_next ?? pageSource.hasNext),
+  };
+}
+
+function buildQueryPath(path: string, params: Record<string, string | number | undefined>): string {
+  const searchParams = new URLSearchParams();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') {
+      searchParams.set(key, String(value));
+    }
+  });
+
+  const query = searchParams.toString();
+  return query ? `${path}?${query}` : path;
+}
+
+function buildLinkListPath(params: LinkListParams = {}): string {
+  return buildQueryPath('/api/v1/links', {
+    page: params.page ?? 1,
+    size: params.size ?? 20,
+    status: params.status && params.status !== 'all' ? params.status : undefined,
+    search: params.search?.trim(),
+    sort: params.sort ?? 'created_at,desc',
+  });
+}
+
+function serializeCreateLinkPayload(payload: CreateLinkPayload): RawRecord {
+  return {
+    long_url: payload.originalUrl,
     title: payload.title.trim() || buildDefaultTitle(payload.originalUrl),
-    channel: payload.channel,
-    clicks: 0,
-    uniqueVisitors: 0,
-    status: 'active',
-    createdAt: new Date().toISOString(),
-    expiresAt: toIsoDate(payload.expiresAt),
+    custom_slug: payload.customSlug?.trim() || undefined,
+    channel: payload.channel?.trim() || undefined,
+    expires_at: toIsoDate(payload.expiresAt),
+    tags: payload.tags ?? [],
+    metadata: payload.metadata ?? {},
+  };
+}
+
+function serializeUpdateLinkPayload(payload: UpdateLinkPayload): RawRecord {
+  return {
+    long_url: payload.originalUrl?.trim() || undefined,
+    title: payload.title?.trim() || undefined,
+    custom_slug: payload.customSlug?.trim() || undefined,
+    channel: payload.channel?.trim() || undefined,
+    expires_at: payload.expiresAt === null ? null : toIsoDate(payload.expiresAt),
+    tags: payload.tags,
+    metadata: payload.metadata,
   };
 }
 
@@ -358,7 +783,7 @@ export const api = {
   },
 
   async register(payload: RegisterPayload): Promise<AuthUser> {
-    const data = await request<Record<string, unknown>>('/api/v1/auth/register', {
+    const data = await request<RawRecord>('/api/v1/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -366,46 +791,105 @@ export const api = {
     return mapAuthUser(data);
   },
 
-  async getLinks(): Promise<Link[]> {
-    return structuredClone(readSessionLinks());
+  async login(payload: LoginPayload): Promise<AuthSession> {
+    const data = await request<RawRecord>('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    return mapAuthSession(data);
+  },
+
+  async refresh(): Promise<AuthSession> {
+    return refreshAuthSession();
+  },
+
+  async logout(): Promise<void> {
+    const refreshToken = getRefreshToken();
+
+    if (!refreshToken) {
+      clearAuthSession();
+      return;
+    }
+
+    try {
+      await requestInternal<null>('/api/v1/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({
+          refresh_token: refreshToken,
+        }),
+      }, false);
+    } finally {
+      clearAuthSession();
+    }
+  },
+
+  async me(): Promise<AuthUser> {
+    const data = await request<RawRecord>('/api/v1/auth/me');
+    return mapAuthUser(data);
+  },
+
+  async getLinks(params: LinkListParams = {}): Promise<LinkListResponse> {
+    const result = await requestWithMeta<RawRecord[]>(buildLinkListPath(params));
+    const items = (Array.isArray(result.data) ? result.data : []).map(mapLink);
+
+    return {
+      items,
+      page: mapLinkPageMeta(result.meta, params),
+    };
   },
 
   async getLink(id: string): Promise<Link> {
-    const link = readSessionLinks().find((item) => item.id === id || item.slug === id);
-
-    if (!link) {
-      throw new ApiFeatureUnavailableError(
-        'links.detail',
-        'The backend does not expose a link detail endpoint yet. Only links created in this browser session are available.',
-      );
-    }
-
-    return structuredClone(link);
+    const data = await request<RawRecord>(`/api/v1/links/${encodeURIComponent(id)}`);
+    return mapLink(data);
   },
 
   async createLink(payload: CreateLinkPayload): Promise<Link> {
-    const data = await request<Record<string, unknown>>('/api/short-urls', {
+    const data = await request<RawRecord>('/api/v1/links', {
       method: 'POST',
-      body: JSON.stringify({
-        longUrl: payload.originalUrl,
-      }),
+      body: JSON.stringify(serializeCreateLinkPayload(payload)),
     });
 
-    const link = mapCreatedLink(data, payload);
-    upsertSessionLink(link);
-    return structuredClone(link);
+    return mapLink(data);
   },
 
-  async updateLink(_id: string, _payload: UpdateLinkPayload): Promise<Link> {
-    throw new ApiFeatureUnavailableError('links.update', backendCapabilities.linkUpdate.summary);
+  async updateLink(id: string, payload: UpdateLinkPayload): Promise<Link> {
+    const data = await request<RawRecord>(`/api/v1/links/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(serializeUpdateLinkPayload(payload)),
+    });
+
+    return mapLink(data);
   },
 
-  async deleteLink(_id: string): Promise<void> {
-    throw new ApiFeatureUnavailableError('links.delete', backendCapabilities.linkDelete.summary);
+  async updateLinkStatus(id: string, payload: UpdateLinkStatusPayload): Promise<Link> {
+    const data = await request<RawRecord>(`/api/v1/links/${encodeURIComponent(id)}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+
+    return mapLink(data);
+  },
+
+  async deleteLink(id: string): Promise<void> {
+    await request<null>(`/api/v1/links/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async getLinkQrCodeBlob(id: string, size = 512): Promise<Blob> {
+    return requestBlob(`/api/v1/links/${encodeURIComponent(id)}/qrcode?format=png&size=${size}`);
   },
 
   async getDashboardStats(): Promise<DashboardStats> {
-    throw new ApiFeatureUnavailableError('dashboard', backendCapabilities.dashboard.summary);
+    const data = await request<RawRecord>('/api/v1/dashboard/summary');
+    return mapDashboardStats(data);
+  },
+
+  async getHotLinks(window = '15m', limit = 10): Promise<Link[]> {
+    const path = buildQueryPath('/api/v1/analytics/realtime/hot-links', { window, limit });
+    const data = await request<RawRecord[]>(path);
+    return (Array.isArray(data) ? data : []).map(mapLink);
   },
 
   async getAlerts(): Promise<Alert[]> {

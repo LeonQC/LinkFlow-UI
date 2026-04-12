@@ -5,6 +5,7 @@ import { MobileNav } from '../components/mobile-nav';
 import { TopBar } from '../components/top-bar';
 import { Toaster } from '../components/ui/sonner';
 import { useBackendHealth } from '../hooks/use-backend-health';
+import { api, hasAuthSession } from '../services/linkflow-api';
 
 export function RootLayoutLive() {
   const navigate = useNavigate();
@@ -16,15 +17,17 @@ export function RootLayoutLive() {
   } = useBackendHealth();
 
   useEffect(() => {
+    if (!hasAuthSession()) {
+      navigate('/auth/login', { replace: true });
+      return;
+    }
+
     const userRole = localStorage.getItem('userRole');
     setIsAdmin(userRole === 'admin');
-  }, []);
+  }, [navigate]);
 
   const handleLogout = () => {
-    localStorage.removeItem('userRole');
-    localStorage.removeItem('userName');
-    localStorage.removeItem('userEmail');
-    localStorage.removeItem('accessToken');
+    void api.logout();
     navigate('/auth/login');
   };
 
