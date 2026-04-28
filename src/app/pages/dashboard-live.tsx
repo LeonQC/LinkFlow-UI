@@ -1,38 +1,40 @@
-import React from 'react';
-import { Activity, Database, Link2, UserRoundPlus } from 'lucide-react';
+﻿import React from 'react';
+import { BarChart3, Link2, MousePointerClick, Users } from 'lucide-react';
 import { BackendCapabilityAlert } from '../components/backend-capability-alert';
+import { EmptyState } from '../components/empty-state';
+import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
-import { useBackendHealth } from '../hooks/use-backend-health';
-import { useLinks } from '../hooks/use-links';
-import { backendCapabilities } from '../services/linkflow-api';
+import { Skeleton } from '../components/ui/skeleton';
+import { useDashboardStats, useHotLinks } from '../hooks/use-dashboard';
+import { backendCapabilities, formatShortUrl, resolveShortUrl } from '../services/linkflow-api';
 
 export function DashboardPageLive() {
-  const { data: health, isLoading: healthLoading, isError: healthError } = useBackendHealth();
-  const { data: links = [] } = useLinks();
+  const { data: stats, isLoading: statsLoading, isError: statsError, error: statsErrorValue } = useDashboardStats();
+  const { data: hotLinks = [], isLoading: hotLinksLoading, isError: hotLinksError, error: hotLinksErrorValue } = useHotLinks('15m', 10);
 
   const cards = [
     {
-      title: 'Backend health',
-      value: healthLoading ? 'Checking...' : healthError ? 'Down' : health?.status ?? 'Unknown',
-      icon: Activity,
+      title: 'Total links',
+      value: stats?.totalLinks ?? 0,
+      icon: Link2,
       accent: '#2563EB',
     },
     {
-      title: 'Register API',
-      value: backendCapabilities.authRegister.available ? 'Live' : 'Missing',
-      icon: UserRoundPlus,
+      title: 'Active links',
+      value: stats?.activeLinks ?? 0,
+      icon: BarChart3,
       accent: '#10B981',
     },
     {
-      title: 'Short links in session',
-      value: String(links.length),
-      icon: Link2,
+      title: 'Total clicks',
+      value: stats?.totalClicks ?? 0,
+      icon: MousePointerClick,
       accent: '#F59E0B',
     },
     {
-      title: 'Analytics APIs',
-      value: backendCapabilities.dashboard.available ? 'Live' : 'Pending',
-      icon: Database,
+      title: 'Unique visitors',
+      value: stats?.uniqueVisitors ?? 0,
+      icon: Users,
       accent: '#111827',
     },
   ];
@@ -40,9 +42,21 @@ export function DashboardPageLive() {
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-7xl mx-auto">
       <div>
-        <h1 className="text-2xl font-semibold text-[#111827]">Development Dashboard</h1>
-        <p className="text-sm text-[#6B7280] mt-1">This dashboard now reflects only the backend capabilities that actually exist.</p>
+        <h1 className="text-2xl font-semibold text-[#111827]">Dashboard</h1>
+        <p className="text-sm text-[#6B7280] mt-1">Live summary and hot-link data from the backend.</p>
       </div>
+
+      <BackendCapabilityAlert
+        title="Backend integration"
+        description={`${backendCapabilities.dashboard.summary} ${backendCapabilities.hotLinks.summary}`}
+        tone="success"
+      />
+
+      <BackendCapabilityAlert
+        title="Not shown yet"
+        description="Risk analytics, monitoring charts, detail analytics, and WebSocket realtime streams are hidden until those backend interfaces are complete."
+        tone="warning"
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         {cards.map((card) => {
@@ -53,7 +67,13 @@ export function DashboardPageLive() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-[#6B7280]">{card.title}</p>
-                  <p className="mt-2 text-2xl font-semibold text-[#111827]">{card.value}</p>
+                  {statsLoading ? (
+                    <Skeleton className="mt-3 h-8 w-24" />
+                  ) : statsError ? (
+                    <p className="mt-2 text-sm text-[#B91C1C]">Unavailable</p>
+                  ) : (
+                    <p className="mt-2 text-2xl font-semibold text-[#111827]">{card.value.toLocaleString()}</p>
+                  )}
                 </div>
                 <div
                   className="flex h-12 w-12 items-center justify-center rounded-xl"
@@ -67,28 +87,64 @@ export function DashboardPageLive() {
         })}
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <BackendCapabilityAlert
-          title="Working today"
-          description="`POST /api/v1/auth/register`, `POST /api/short-urls`, `GET /api/short-urls/{slug}`, and `GET /actuator/health` are the live integration points currently wired into the frontend."
-          tone="success"
-        />
+      {statsError ? (
+        <Card className="p-6">
+          <EmptyState
+            title="Summary is unavailable"
+            description={statsErrorValue instanceof Error ? statsErrorValue.message : 'The backend returned an error for /api/v1/dashboard/summary.'}
+            icon={BarChart3}
+          />
+        </Card>
+      ) : null}
 
-        <BackendCapabilityAlert
-          title="Still pending in backend"
-          description="Login, link listing/detail management, dashboard analytics, alert review, and monitoring metrics are intentionally shown as unavailable instead of mocked."
-          tone="warning"
-        />
-      </div>
-
-      <Card className="p-6 space-y-3">
-        <h2 className="text-lg font-semibold text-[#111827]">What to build next</h2>
-        <p className="text-sm text-[#6B7280]">
-          Once the backend adds list or detail APIs, the frontend can switch from browser-session link records to authoritative server data with minimal churn.
-        </p>
-        <div className="rounded-lg bg-[#F9FAFB] p-4 text-sm text-[#111827]">
-          Current session link count: {links.length}
+      <Card className="p-6 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-[#111827]">Hot links</h2>
+            <p className="text-sm text-[#6B7280] mt-1">Window: 15m · Limit: 10</p>
+          </div>
         </div>
+
+        {hotLinksLoading ? (
+          <div className="space-y-3">
+            {[...Array(3)].map((_, index) => (
+              <div key={index} className="rounded-lg border border-[#E5E7EB] p-4 space-y-3">
+                <Skeleton className="h-5 w-48" />
+                <Skeleton className="h-4 w-full" />
+              </div>
+            ))}
+          </div>
+        ) : hotLinksError ? (
+          <EmptyState
+            title="Hot links are unavailable"
+            description={hotLinksErrorValue instanceof Error ? hotLinksErrorValue.message : 'The backend returned an error for realtime hot links.'}
+            icon={Link2}
+          />
+        ) : hotLinks.length === 0 ? (
+          <EmptyState
+            title="No hot links yet"
+            description="The backend returned an empty hot-link list for the selected realtime window."
+            icon={Link2}
+          />
+        ) : (
+          <div className="space-y-3">
+            {hotLinks.map((link) => (
+              <div key={link.id} className="flex flex-col gap-3 rounded-xl border border-[#E5E7EB] p-4 md:flex-row md:items-center md:justify-between">
+                <div className="min-w-0">
+                  <h3 className="font-medium text-[#111827] truncate">{link.title}</h3>
+                  <p className="mt-1 text-sm text-[#6B7280] break-all">{formatShortUrl(link.shortUrl)}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3 text-sm text-[#6B7280]">
+                  <span>{link.clicks.toLocaleString()} clicks</span>
+                  <span>{link.uniqueVisitors.toLocaleString()} visitors</span>
+                  <Button variant="outline" asChild>
+                    <a href={resolveShortUrl(link.shortUrl)} target="_blank" rel="noreferrer">Open</a>
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
     </div>
   );

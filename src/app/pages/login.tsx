@@ -9,7 +9,7 @@ import { Checkbox } from '../components/ui/checkbox';
 import { toast } from 'sonner';
 import { motion } from 'motion/react';
 import { Link2, Github, Mail, Chrome } from 'lucide-react';
-import { ApiClientError, api } from '../services/linkflow-api';
+import { ApiClientError, api, storeAuthSession } from '../services/linkflow-api';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -27,26 +27,33 @@ export function LoginPage() {
     e.preventDefault();
     setLoading(true);
 
-    setTimeout(() => {
-      if (loginData.email === 'admin@linkflow.com') {
-        localStorage.setItem('userRole', 'admin');
-        localStorage.setItem('userName', 'Admin User');
-        localStorage.setItem('userEmail', loginData.email);
-        toast.success('Demo 登录成功，当前为管理员视角');
-      } else {
-        localStorage.setItem('userRole', 'user');
-        localStorage.setItem('userName', loginData.email.split('@')[0]);
-        localStorage.setItem('userEmail', loginData.email);
-        toast.success('Demo 登录成功');
-      }
+    try {
+      const session = await api.login({
+        email: loginData.email,
+        password: loginData.password,
+      });
+
+      storeAuthSession(session);
 
       if (rememberMe) {
         localStorage.setItem('rememberMe', 'true');
+      } else {
+        localStorage.removeItem('rememberMe');
       }
 
+      toast.success(`登录成功，欢迎回来 ${session.user.username}`);
       navigate('/dashboard');
+    } catch (error) {
+      if (error instanceof ApiClientError) {
+        toast.error(`${error.code}: ${error.message}`);
+      } else if (error instanceof Error) {
+        toast.error(error.message);
+      } else {
+        toast.error('登录失败');
+      }
+    } finally {
       setLoading(false);
-    }, 600);
+    }
   };
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -196,7 +203,7 @@ export function LoginPage() {
               <p className="font-medium mb-2">当前说明</p>
               <div className="space-y-1 text-xs">
                 <p>注册会真实调用后端 `POST /api/v1/auth/register`</p>
-                <p>登录仍是 demo 模式，等待后端 `login` 接口完成</p>
+                <p>登录会真实调用后端 `POST /api/v1/auth/login` 并保存 JWT</p>
                 <p className="text-[#9CA3AF]">管理员演示邮箱：admin@linkflow.com</p>
               </div>
             </div>

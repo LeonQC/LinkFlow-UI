@@ -1,10 +1,12 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+锘縤mport { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   api,
   type CreateLinkPayload,
   type Link,
+  type LinkListParams,
   type UpdateLinkPayload,
+  type UpdateLinkStatusPayload,
 } from '../services/linkflow-api';
 
 export const linkKeys = {
@@ -15,10 +17,10 @@ export const linkKeys = {
   detail: (id: string) => [...linkKeys.details(), id] as const,
 };
 
-export function useLinks() {
+export function useLinks(params: LinkListParams = {}) {
   return useQuery({
-    queryKey: linkKeys.lists(),
-    queryFn: api.getLinks,
+    queryKey: linkKeys.list(params),
+    queryFn: () => api.getLinks(params),
   });
 }
 
@@ -37,10 +39,10 @@ export function useCreateLink() {
     mutationFn: (payload: CreateLinkPayload) => api.createLink(payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: linkKeys.lists() });
-      toast.success('短链创建成功');
+      toast.success('Short link created.');
     },
     onError: (error: Error) => {
-      toast.error(`创建失败: ${error.message}`);
+      toast.error(`Create failed: ${error.message}`);
     },
   });
 }
@@ -53,10 +55,26 @@ export function useUpdateLink() {
     onSuccess: (data: Link) => {
       queryClient.invalidateQueries({ queryKey: linkKeys.lists() });
       queryClient.invalidateQueries({ queryKey: linkKeys.detail(data.id) });
-      toast.success('短链更新成功');
+      toast.success('Short link updated.');
     },
     onError: (error: Error) => {
-      toast.error(`更新失败: ${error.message}`);
+      toast.error(`Update failed: ${error.message}`);
+    },
+  });
+}
+
+export function useUpdateLinkStatus() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: UpdateLinkStatusPayload }) => api.updateLinkStatus(id, data),
+    onSuccess: (data: Link) => {
+      queryClient.invalidateQueries({ queryKey: linkKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: linkKeys.detail(data.id) });
+      toast.success('Short link status updated.');
+    },
+    onError: (error: Error) => {
+      toast.error(`Status update failed: ${error.message}`);
     },
   });
 }
@@ -68,10 +86,10 @@ export function useDeleteLink() {
     mutationFn: (id: string) => api.deleteLink(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: linkKeys.lists() });
-      toast.success('短链已删除');
+      toast.success('Short link deleted.');
     },
     onError: (error: Error) => {
-      toast.error(`删除失败: ${error.message}`);
+      toast.error(`Delete failed: ${error.message}`);
     },
   });
 }

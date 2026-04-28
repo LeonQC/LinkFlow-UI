@@ -1,21 +1,62 @@
-import React, { useState } from 'react';
+﻿import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { ArrowLeft, Copy, ExternalLink, QrCode } from 'lucide-react';
+import { ArrowLeft, Copy, ExternalLink, QrCode, Save, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { BackendCapabilityAlert } from '../components/backend-capability-alert';
 import { EmptyState } from '../components/empty-state';
 import { LiveLinkQrDialog } from '../components/live-link-qr-dialog';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
+import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
 import { Skeleton } from '../components/ui/skeleton';
-import { useLink } from '../hooks/use-links';
-import { backendCapabilities, formatShortUrl, resolveShortUrl } from '../services/linkflow-api';
+import { useDeleteLink, useLink, useUpdateLink, useUpdateLinkStatus } from '../hooks/use-links';
+import { backendCapabilities, formatShortUrl, resolveShortUrl, type LinkStatus } from '../services/linkflow-api';
+
+function toDateTimeInput(value?: string) {
+  if (!value) {
+    return '';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+
+  return parsed.toISOString().slice(0, 16);
+}
 
 export function LinkDetailPageLive() {
   const navigate = useNavigate();
   const { id = '' } = useParams();
-  const { data: link, isLoading, isError } = useLink(id);
+  const { data: link, isLoading, isError, error } = useLink(id);
+  const updateLink = useUpdateLink();
+  const updateStatus = useUpdateLinkStatus();
+  const deleteLink = useDeleteLink();
   const [qrOpen, setQrOpen] = useState(false);
+  const [form, setForm] = useState({
+    title: '',
+    originalUrl: '',
+    customSlug: '',
+    channel: '',
+    expiresAt: '',
+    status: 'active' as LinkStatus,
+  });
+
+  useEffect(() => {
+    if (!link) {
+      return;
+    }
+
+    setForm({
+      title: link.title,
+      originalUrl: link.originalUrl,
+      customSlug: link.slug ?? '',
+      channel: link.channel ?? '',
+      expiresAt: toDateTimeInput(link.expiresAt),
+      status: link.status,
+    });
+  }, [link]);
 
   const handleCopy = async () => {
     if (!link) {
@@ -24,6 +65,48 @@ export function LinkDetailPageLive() {
 
     await navigator.clipboard.writeText(resolveShortUrl(link.shortUrl));
     toast.success('Short URL copied.');
+  };
+
+  const handleSave = async () => {
+    if (!link) {
+      return;
+    }
+
+    await updateLink.mutateAsync({
+      id: link.id,
+      data: {
+        title: form.title,
+        originalUrl: form.originalUrl,
+        customSlug: form.customSlug || undefined,
+        channel: form.channel || undefined,
+        expiresAt: form.expiresAt || null,
+      },
+    });
+  };
+
+  const handleStatusChange = async () => {
+    if (!link) {
+      return;
+    }
+
+    await updateStatus.mutateAsync({
+      id: link.id,
+      data: { status: form.status },
+    });
+  };
+
+  const handleDelete = async () => {
+    if (!link) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete ${link.title}? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+
+    await deleteLink.mutateAsync(link.id);
+    navigate('/links');
   };
 
   if (isLoading) {
@@ -41,7 +124,7 @@ export function LinkDetailPageLive() {
       <div className="p-4 md:p-6 max-w-5xl mx-auto">
         <EmptyState
           title="Link details are not available"
-          description="The current backend snapshot does not expose detail APIs. You can only inspect links created in this browser session."
+          description={error instanceof Error ? error.message : 'The backend could not return this link.'}
           action={
             <Button onClick={() => navigate('/links')} className="bg-[#2563EB] hover:bg-[#1D4ED8]">
               Back to links
@@ -65,9 +148,9 @@ export function LinkDetailPageLive() {
       </div>
 
       <BackendCapabilityAlert
-        title="Current backend scope"
-        description={`${backendCapabilities.linkDetail.summary} Analytics, click logs, risk scores, and edit/delete actions are intentionally hidden until the backend exposes them.`}
-        tone="warning"
+        title="Backend integration"
+        description={`${backendCapabilities.linkDetail.summary} ${backendCapabilities.linkUpdate.summary} ${backendCapabilities.linkStatus.summary}`}
+        tone="success"
       />
 
       <Card className="p-6 space-y-6">
@@ -86,32 +169,92 @@ export function LinkDetailPageLive() {
             <QrCode className="w-4 h-4 mr-2" />
             Show QR code
           </Button>
+          <Button variant="outline" className="border-[#FCA5A5] text-[#B91C1C] hover:text-[#991B1B]" onClick={() => void handleDelete()} disabled={deleteLink.isPending}>
+            <Trash2 className="w-4 h-4 mr-2" />
+            {deleteLink.isPending ? 'Deleting...' : 'Delete'}
+          </Button>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="rounded-lg border border-[#E5E7EB] p-4">
-            <p className="text-sm text-[#6B7280] mb-2">Original URL</p>
-            <p className="text-sm text-[#111827] break-all">{link.originalUrl}</p>
-          </div>
-          <div className="rounded-lg border border-[#E5E7EB] p-4">
             <p className="text-sm text-[#6B7280] mb-2">Redirect URL</p>
             <p className="text-sm text-[#111827] break-all">{resolveShortUrl(link.shortUrl)}</p>
+          </div>
+          <div className="rounded-lg border border-[#E5E7EB] p-4">
+            <p className="text-sm text-[#6B7280] mb-2">Current status</p>
+            <p className="text-sm text-[#111827]">{link.status}</p>
           </div>
           <div className="rounded-lg border border-[#E5E7EB] p-4">
             <p className="text-sm text-[#6B7280] mb-2">Created at</p>
             <p className="text-sm text-[#111827]">{new Date(link.createdAt).toLocaleString()}</p>
           </div>
           <div className="rounded-lg border border-[#E5E7EB] p-4">
-            <p className="text-sm text-[#6B7280] mb-2">Known backend fields</p>
-            <p className="text-sm text-[#111827]">Slug: {link.slug ?? 'N/A'}</p>
+            <p className="text-sm text-[#6B7280] mb-2">Counters</p>
+            <p className="text-sm text-[#111827]">Clicks {link.clicks.toLocaleString()} · Unique visitors {link.uniqueVisitors.toLocaleString()}</p>
           </div>
+        </div>
+      </Card>
+
+      <Card className="p-6 space-y-5">
+        <div>
+          <h2 className="text-lg font-semibold text-[#111827]">Edit link</h2>
+          <p className="mt-1 text-sm text-[#6B7280]">Changes are saved through PATCH /api/v1/links/{'{link_id}'}.</p>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="detail-title">Title</Label>
+            <Input id="detail-title" value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="detail-slug">Custom slug</Label>
+            <Input id="detail-slug" value={form.customSlug} onChange={(event) => setForm((current) => ({ ...current, customSlug: event.target.value }))} />
+          </div>
+          <div className="space-y-2 md:col-span-2">
+            <Label htmlFor="detail-url">Original URL</Label>
+            <Input id="detail-url" type="url" value={form.originalUrl} onChange={(event) => setForm((current) => ({ ...current, originalUrl: event.target.value }))} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="detail-channel">Channel</Label>
+            <Input id="detail-channel" value={form.channel} onChange={(event) => setForm((current) => ({ ...current, channel: event.target.value }))} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="detail-expires">Expires at</Label>
+            <Input id="detail-expires" type="datetime-local" value={form.expiresAt} onChange={(event) => setForm((current) => ({ ...current, expiresAt: event.target.value }))} />
+          </div>
+        </div>
+
+        <Button onClick={() => void handleSave()} className="bg-[#2563EB] hover:bg-[#1D4ED8]" disabled={updateLink.isPending}>
+          <Save className="w-4 h-4 mr-2" />
+          {updateLink.isPending ? 'Saving...' : 'Save changes'}
+        </Button>
+      </Card>
+
+      <Card className="p-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-[#111827]">Status</h2>
+          <p className="mt-1 text-sm text-[#6B7280]">Status changes use PATCH /api/v1/links/{'{link_id}'}/status.</p>
+        </div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <select
+            value={form.status}
+            onChange={(event) => setForm((current) => ({ ...current, status: event.target.value as LinkStatus }))}
+            className="h-10 rounded-md border border-[#E5E7EB] bg-white px-3 text-sm text-[#111827] sm:w-52"
+          >
+            {(['active', 'paused', 'expired', 'blocked'] as LinkStatus[]).map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+          <Button variant="outline" onClick={() => void handleStatusChange()} disabled={updateStatus.isPending || form.status === link.status}>
+            {updateStatus.isPending ? 'Updating...' : 'Update status'}
+          </Button>
         </div>
       </Card>
 
       <LiveLinkQrDialog
         open={qrOpen}
         onOpenChange={setQrOpen}
-        link={{ shortUrl: link.shortUrl, title: link.title }}
+        link={{ id: link.id, shortUrl: link.shortUrl, title: link.title }}
       />
     </div>
   );
