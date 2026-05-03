@@ -15,6 +15,8 @@ export const linkKeys = {
   list: (filters?: Record<string, unknown>) => [...linkKeys.lists(), filters] as const,
   details: () => [...linkKeys.all, 'detail'] as const,
   detail: (id: string) => [...linkKeys.details(), id] as const,
+  analytics: (id: string) => [...linkKeys.detail(id), 'analytics'] as const,
+  accessLogs: (id: string, page: number) => [...linkKeys.detail(id), 'access-logs', page] as const,
 };
 
 export function useLinks(params: LinkListParams = {}) {
@@ -32,6 +34,44 @@ export function useLink(id: string) {
   });
 }
 
+export function useLinkAnalytics(id: string) {
+  return {
+    summary: useQuery({
+      queryKey: [...linkKeys.analytics(id), 'summary'],
+      queryFn: () => api.getLinkAnalyticsSummary(id),
+      enabled: Boolean(id),
+    }),
+    timeseries: useQuery({
+      queryKey: [...linkKeys.analytics(id), 'timeseries'],
+      queryFn: () => api.getLinkAnalyticsTimeseries(id, { granularity: '1h' }),
+      enabled: Boolean(id),
+    }),
+    devices: useQuery({
+      queryKey: [...linkKeys.analytics(id), 'devices'],
+      queryFn: () => api.getLinkAnalyticsDevices(id),
+      enabled: Boolean(id),
+    }),
+    browsers: useQuery({
+      queryKey: [...linkKeys.analytics(id), 'browsers'],
+      queryFn: () => api.getLinkAnalyticsBrowsers(id),
+      enabled: Boolean(id),
+    }),
+    locations: useQuery({
+      queryKey: [...linkKeys.analytics(id), 'locations'],
+      queryFn: () => api.getLinkAnalyticsLocations(id),
+      enabled: Boolean(id),
+    }),
+  };
+}
+
+export function useLinkAccessLogs(id: string, page = 1, size = 50) {
+  return useQuery({
+    queryKey: linkKeys.accessLogs(id, page),
+    queryFn: () => api.getLinkAccessLogs(id, { page, size }),
+    enabled: Boolean(id),
+  });
+}
+
 export function useCreateLink() {
   const queryClient = useQueryClient();
 
@@ -43,6 +83,24 @@ export function useCreateLink() {
     },
     onError: (error: Error) => {
       toast.error(`Create failed: ${error.message}`);
+    },
+  });
+}
+
+export function usePreviewLinkTitle() {
+  return useMutation({
+    mutationFn: (originalUrl: string) => api.previewLinkTitle(originalUrl),
+    onError: (error: Error) => {
+      toast.error(`Title preview failed: ${error.message}`);
+    },
+  });
+}
+
+export function useSlugRecommendations() {
+  return useMutation({
+    mutationFn: (payload: { originalUrl: string; title?: string; limit?: number }) => api.getSlugRecommendations(payload),
+    onError: (error: Error) => {
+      toast.error(`Back-half recommendations failed: ${error.message}`);
     },
   });
 }

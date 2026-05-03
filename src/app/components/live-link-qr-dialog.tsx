@@ -22,6 +22,7 @@ interface LiveLinkQrDialogProps {
 
 export function LiveLinkQrDialog({ open, onOpenChange, link }: LiveLinkQrDialogProps) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [assetStatus, setAssetStatus] = useState<string>('Checking cloud asset...');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const absoluteUrl = link ? resolveShortUrl(link.shortUrl) : '';
@@ -38,10 +39,31 @@ export function LiveLinkQrDialog({ open, onOpenChange, link }: LiveLinkQrDialogP
 
     setIsLoading(true);
     setError(null);
+    setAssetStatus('Checking cloud asset...');
 
-    api.getLinkQrCodeBlob(link.id, 512)
-      .then((blob) => {
+    Promise.allSettled([
+      api.getLinkQrCodeBlob(link.id, 512),
+      api.getLinkQrCodeAsset(link.id, 512),
+    ])
+      .then(([blobResult, assetResult]) => {
         if (disposed) {
+          return;
+        }
+
+        if (assetResult.status === 'fulfilled') {
+          setAssetStatus(assetResult.value?.storageUrl ? `Cloud asset: ${assetResult.value.storageUrl}` : 'Cloud storage is not enabled or no asset is available yet.');
+        } else {
+          setAssetStatus(assetResult.reason instanceof Error ? assetResult.reason.message : 'Cloud asset metadata is unavailable.');
+        }
+
+        if (blobResult.status === 'rejected') {
+          throw blobResult.reason;
+        }
+
+        return blobResult.value;
+      })
+      .then((blob) => {
+        if (disposed || !blob) {
           return;
         }
 
@@ -104,6 +126,7 @@ export function LiveLinkQrDialog({ open, onOpenChange, link }: LiveLinkQrDialogP
 
           <div className="w-full rounded-lg bg-[#F9FAFB] px-4 py-3 text-center">
             <code className="text-sm text-[#2563EB] break-all">{link ? formatShortUrl(link.shortUrl) : ''}</code>
+            <p className="mt-2 break-all text-xs text-[#6B7280]">{assetStatus}</p>
           </div>
 
           <div className="grid w-full gap-2 sm:grid-cols-2">

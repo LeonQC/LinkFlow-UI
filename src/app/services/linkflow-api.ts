@@ -3,6 +3,7 @@ export type LinkStatus = 'active' | 'paused' | 'blocked' | 'expired';
 export interface Link {
   id: string;
   slug?: string;
+  backHalf?: string;
   shortUrl: string;
   originalUrl: string;
   title: string;
@@ -35,6 +36,21 @@ export interface LinkListResponse {
   page: LinkPageMeta;
 }
 
+export interface ApiError {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface ApiResponse<T> {
+  request_id?: string;
+  data: T | null;
+  error: ApiError | null;
+  meta?: Record<string, unknown>;
+}
+
+export interface PageMeta extends LinkPageMeta {}
+
 export interface DashboardStats {
   totalLinks: number;
   activeLinks: number;
@@ -50,13 +66,48 @@ export interface Alert {
   linkId: string;
   shortUrl: string;
   title: string;
-  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  riskLevel: 'unknown' | 'low' | 'medium' | 'high' | 'critical';
   riskScore: number;
   reason: string[];
   detectedAt: string;
   status: 'pending' | 'approved' | 'blocked' | 'blacklisted';
   clicks?: number;
   reporter: string;
+}
+
+export interface RiskAlert extends Alert {}
+
+export interface RiskAlertListParams {
+  page?: number;
+  size?: number;
+  riskLevel?: 'unknown' | 'low' | 'medium' | 'high' | 'critical' | 'all';
+  status?: 'pending' | 'approved' | 'blocked' | 'blacklisted' | 'all';
+  search?: string;
+}
+
+export interface RiskAlertListResponse {
+  items: RiskAlert[];
+  page: PageMeta;
+}
+
+export interface RiskScanTask {
+  taskId: string;
+  linkId?: string;
+  longUrl?: string;
+  status: string;
+  createdAt?: string;
+}
+
+export interface MonitoringServiceStatus {
+  status: string;
+  reason?: string;
+  error?: string;
+  [key: string]: unknown;
+}
+
+export interface WsTokenResponse {
+  token: string;
+  expiresAt: string;
 }
 
 export interface AuthUser {
@@ -90,7 +141,7 @@ export interface AuthSession {
 
 export interface CreateLinkPayload {
   originalUrl: string;
-  title: string;
+  title?: string;
   customSlug?: string;
   channel?: string;
   expiresAt?: string;
@@ -115,22 +166,92 @@ export interface UpdateLinkStatusPayload {
 export interface BackendHealth {
   status: string;
   components?: Record<string, unknown>;
+  services?: Record<string, unknown>;
+  checkedAt?: string;
 }
 
-interface ApiEnvelope<T> {
-  request_id?: string;
-  data: T | null;
-  error: {
-    code: string;
-    message: string;
-    details?: Record<string, unknown>;
-  } | null;
-  meta?: Record<string, unknown>;
+export interface TitlePreviewResponse {
+  longUrl: string;
+  title: string;
+  source: string;
+}
+
+export interface SlugRecommendation {
+  slug: string;
+  source: string;
+  available: boolean;
+}
+
+export interface SlugRecommendationResponse {
+  suggestions: SlugRecommendation[];
+}
+
+export interface QrCodeAssetResponse {
+  id: string;
+  linkId: string;
+  format: string;
+  size: number;
+  storageKey: string;
+  storageUrl: string;
+  createdAt: string;
+}
+
+export interface DashboardTrendPoint {
+  bucketStart: string;
+  linksCreated: number;
+  clicks: number;
+  uniqueVisitors: number;
+}
+
+export interface DashboardBreakdownItem {
+  name: string;
+  links: number;
+  clicks: number;
+}
+
+export interface RealtimeOverview {
+  window: string;
+  activeLinks: number;
+  clicks: number;
+  uniqueVisitors: number;
+  eventsPerSecond: number;
+}
+
+export interface AnalyticsSummary {
+  linkId: string;
+  clicks: number;
+  uniqueVisitors: number;
+  botClicks: number;
+  from?: string;
+  to?: string;
+}
+
+export interface AnalyticsTimeseriesPoint {
+  bucketStart: string;
+  clicks: number;
+  uniqueVisitors: number;
+}
+
+export interface AnalyticsBreakdownItem {
+  name: string;
+  clicks: number;
+  percentage: number;
+}
+
+export interface AccessLog {
+  eventId: string;
+  occurredAt: string;
+  ip?: string;
+  country?: string;
+  city?: string;
+  deviceType?: string;
+  browser?: string;
+  referrer?: string;
 }
 
 interface RequestResult<T> {
   response: Response;
-  payload: ApiEnvelope<T> | T | null;
+  payload: ApiResponse<T> | T | null;
   requestId?: string;
 }
 
@@ -143,6 +264,7 @@ interface UnwrappedResult<T> {
 type RawRecord = Record<string, unknown>;
 
 const apiBaseUrl = ((import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://localhost:8080').replace(/\/$/, '');
+const wsBaseUrl = apiBaseUrl.replace(/^http/i, 'ws');
 const authStorageKeys = {
   accessToken: 'accessToken',
   tokenType: 'tokenType',
@@ -205,21 +327,37 @@ export const backendCapabilities = {
     available: true,
     summary: 'QR code PNG retrieval is wired to GET /api/v1/links/{link_id}/qrcode with Authorization.',
   },
+  linkEnhancement: {
+    available: true,
+    summary: 'Title preview and back-half recommendations are wired to POST /api/v1/links/title-preview and /slug-recommendations.',
+  },
   dashboard: {
     available: true,
-    summary: 'Dashboard summary is wired to GET /api/v1/dashboard/summary.',
+    summary: 'Dashboard summary, trends, channels, and locations are wired to /api/v1/dashboard.',
+  },
+  realtimeOverview: {
+    available: true,
+    summary: 'Realtime overview is wired to GET /api/v1/analytics/realtime/overview.',
   },
   hotLinks: {
     available: true,
     summary: 'Realtime hot links are wired to GET /api/v1/analytics/realtime/hot-links.',
   },
+  linkAnalytics: {
+    available: true,
+    summary: 'Link analytics summary, timeseries, breakdowns, and access logs are wired under /api/v1/links/{link_id}.',
+  },
   alerts: {
-    available: false,
-    summary: 'The backend does not expose risk alert APIs yet.',
+    available: true,
+    summary: 'Risk alerts and scan tasks are wired to /api/v1/risk.',
   },
   monitoring: {
-    available: false,
-    summary: 'The backend does not expose monitoring metrics beyond actuator health yet.',
+    available: true,
+    summary: 'Monitoring health, service status, dependencies, Flink jobs, and metrics are wired to /api/v1/monitoring.',
+  },
+  websocket: {
+    available: true,
+    summary: 'Realtime WebSocket token issuance is wired to POST /api/v1/ws/token.',
   },
 } as const;
 
@@ -396,7 +534,7 @@ async function sendRequest<T>(path: string, init: RequestInit = {}, includeAutho
   return {
     response,
     requestId: response.headers.get('X-Request-Id') ?? undefined,
-    payload: await response.json().catch(() => null) as ApiEnvelope<T> | T | null,
+    payload: await response.json().catch(() => null) as ApiResponse<T> | T | null,
   };
 }
 
@@ -404,8 +542,8 @@ function unwrapResult<T>(result: RequestResult<T>): UnwrappedResult<T> {
   const { response, payload, requestId } = result;
 
   if (!response.ok) {
-    if (payload && typeof payload === 'object' && 'error' in payload && (payload as ApiEnvelope<T>).error) {
-      const envelope = payload as ApiEnvelope<T>;
+    if (payload && typeof payload === 'object' && 'error' in payload && (payload as ApiResponse<T>).error) {
+      const envelope = payload as ApiResponse<T>;
       throw new ApiClientError(
         response.status,
         envelope.error?.code ?? 'HTTP_ERROR',
@@ -418,8 +556,8 @@ function unwrapResult<T>(result: RequestResult<T>): UnwrappedResult<T> {
     throw new ApiClientError(response.status, 'HTTP_ERROR', `Request failed with status ${response.status}.`, {}, requestId);
   }
 
-  if (payload && typeof payload === 'object' && 'error' in payload && (payload as ApiEnvelope<T>).error) {
-    const envelope = payload as ApiEnvelope<T>;
+  if (payload && typeof payload === 'object' && 'error' in payload && (payload as ApiResponse<T>).error) {
+    const envelope = payload as ApiResponse<T>;
     throw new ApiClientError(
       response.status,
       envelope.error?.code ?? 'HTTP_ERROR',
@@ -430,7 +568,7 @@ function unwrapResult<T>(result: RequestResult<T>): UnwrappedResult<T> {
   }
 
   if (payload && typeof payload === 'object' && 'data' in payload) {
-    const envelope = payload as ApiEnvelope<T>;
+    const envelope = payload as ApiResponse<T>;
     return {
       data: envelope.data as T,
       meta: envelope.meta,
@@ -453,7 +591,7 @@ async function parseBlobError(response: Response): Promise<ApiClientError> {
   const contentType = response.headers.get('content-type') ?? '';
 
   if (contentType.includes('application/json')) {
-    const payload = await response.json().catch(() => null) as ApiEnvelope<unknown> | null;
+    const payload = await response.json().catch(() => null) as ApiResponse<unknown> | null;
     if (payload?.error) {
       return new ApiClientError(
         response.status,
@@ -505,16 +643,21 @@ async function refreshAuthSession(): Promise<AuthSession> {
 async function requestInternal<T>(path: string, init: RequestInit = {}, allowRefreshRetry = true): Promise<T> {
   const result = await sendRequest<T>(path, init, true);
 
-  if (result.response.status === 401 && allowRefreshRetry && !shouldBypassRefresh(path) && getRefreshToken()) {
-    try {
-      await refreshAuthSession();
-    } catch (error) {
-      clearAuthSession();
-      redirectToLogin();
-      throw error;
+  if (result.response.status === 401 && !shouldBypassRefresh(path)) {
+    if (allowRefreshRetry && getRefreshToken()) {
+      try {
+        await refreshAuthSession();
+      } catch (error) {
+        clearAuthSession();
+        redirectToLogin();
+        throw error;
+      }
+
+      return requestInternal<T>(path, init, false);
     }
 
-    return requestInternal<T>(path, init, false);
+    clearAuthSession();
+    redirectToLogin();
   }
 
   return unwrapPayload(result);
@@ -523,16 +666,21 @@ async function requestInternal<T>(path: string, init: RequestInit = {}, allowRef
 async function requestWithMetaInternal<T>(path: string, init: RequestInit = {}, allowRefreshRetry = true): Promise<UnwrappedResult<T>> {
   const result = await sendRequest<T>(path, init, true);
 
-  if (result.response.status === 401 && allowRefreshRetry && !shouldBypassRefresh(path) && getRefreshToken()) {
-    try {
-      await refreshAuthSession();
-    } catch (error) {
-      clearAuthSession();
-      redirectToLogin();
-      throw error;
+  if (result.response.status === 401 && !shouldBypassRefresh(path)) {
+    if (allowRefreshRetry && getRefreshToken()) {
+      try {
+        await refreshAuthSession();
+      } catch (error) {
+        clearAuthSession();
+        redirectToLogin();
+        throw error;
+      }
+
+      return requestWithMetaInternal<T>(path, init, false);
     }
 
-    return requestWithMetaInternal<T>(path, init, false);
+    clearAuthSession();
+    redirectToLogin();
   }
 
   return unwrapResult(result);
@@ -541,16 +689,21 @@ async function requestWithMetaInternal<T>(path: string, init: RequestInit = {}, 
 async function requestBlobInternal(path: string, init: RequestInit = {}, allowRefreshRetry = true): Promise<Blob> {
   const response = await sendRawRequest(path, init, true);
 
-  if (response.status === 401 && allowRefreshRetry && !shouldBypassRefresh(path) && getRefreshToken()) {
-    try {
-      await refreshAuthSession();
-    } catch (error) {
-      clearAuthSession();
-      redirectToLogin();
-      throw error;
+  if (response.status === 401 && !shouldBypassRefresh(path)) {
+    if (allowRefreshRetry && getRefreshToken()) {
+      try {
+        await refreshAuthSession();
+      } catch (error) {
+        clearAuthSession();
+        redirectToLogin();
+        throw error;
+      }
+
+      return requestBlobInternal(path, init, false);
     }
 
-    return requestBlobInternal(path, init, false);
+    clearAuthSession();
+    redirectToLogin();
   }
 
   if (!response.ok) {
@@ -654,14 +807,16 @@ function readLinkStatus(value: unknown): LinkStatus {
 
 function mapLink(source: RawRecord): Link {
   const originalUrl = String(source.long_url ?? source.longUrl ?? source.originalUrl ?? '');
-  const slug = normalizeOptionalString(source.slug);
-  const id = String(source.id ?? slug ?? '');
-  const title = normalizeOptionalString(source.title) ?? (originalUrl ? buildDefaultTitle(originalUrl) : slug ?? id);
+  const backHalf = normalizeOptionalString(source.back_half ?? source.backHalf ?? source.slug);
+  const id = String(source.link_id ?? source.linkId ?? source.id ?? backHalf ?? '');
+  const title = normalizeOptionalString(source.title) ?? (originalUrl ? buildDefaultTitle(originalUrl) : backHalf ?? id);
+  const shortUrl = String(source.short_link ?? source.shortLink ?? source.short_url ?? source.shortUrl ?? (backHalf ? `/${backHalf}` : ''));
 
   return {
     id,
-    slug,
-    shortUrl: String(source.short_url ?? source.shortUrl ?? (slug ? `/r/${slug}` : '')),
+    slug: backHalf,
+    backHalf,
+    shortUrl,
     originalUrl,
     title,
     channel: normalizeOptionalString(source.channel),
@@ -685,6 +840,148 @@ function mapDashboardStats(source: RawRecord): DashboardStats {
   };
 }
 
+function mapTitlePreview(source: RawRecord): TitlePreviewResponse {
+  return {
+    longUrl: String(source.long_url ?? source.longUrl ?? ''),
+    title: String(source.title ?? ''),
+    source: String(source.source ?? 'unknown'),
+  };
+}
+
+function mapSlugRecommendations(source: RawRecord): SlugRecommendationResponse {
+  const suggestions = Array.isArray(source.suggestions) ? source.suggestions : [];
+  return {
+    suggestions: suggestions.map((item) => {
+      const record = item && typeof item === 'object' ? item as RawRecord : {};
+      return {
+        slug: String(record.slug ?? ''),
+        source: String(record.source ?? 'unknown'),
+        available: Boolean(record.available),
+      };
+    }),
+  };
+}
+
+function mapQrCodeAsset(source: RawRecord): QrCodeAssetResponse {
+  return {
+    id: String(source.id ?? ''),
+    linkId: String(source.link_id ?? source.linkId ?? ''),
+    format: String(source.format ?? 'png'),
+    size: readNumber(source.size, 512),
+    storageKey: String(source.storage_key ?? source.storageKey ?? ''),
+    storageUrl: String(source.storage_url ?? source.storageUrl ?? ''),
+    createdAt: String(source.created_at ?? source.createdAt ?? ''),
+  };
+}
+
+function mapDashboardTrendPoint(source: RawRecord): DashboardTrendPoint {
+  return {
+    bucketStart: String(source.bucket_start ?? source.bucketStart ?? ''),
+    linksCreated: readNumber(source.links_created ?? source.linksCreated),
+    clicks: readNumber(source.clicks),
+    uniqueVisitors: readNumber(source.unique_visitors ?? source.uniqueVisitors),
+  };
+}
+
+function mapDashboardBreakdownItem(source: RawRecord): DashboardBreakdownItem {
+  return {
+    name: String(source.name ?? 'unknown'),
+    links: readNumber(source.links),
+    clicks: readNumber(source.clicks),
+  };
+}
+
+function mapRealtimeOverview(source: RawRecord): RealtimeOverview {
+  return {
+    window: String(source.window ?? '15m'),
+    activeLinks: readNumber(source.active_links ?? source.activeLinks),
+    clicks: readNumber(source.clicks),
+    uniqueVisitors: readNumber(source.unique_visitors ?? source.uniqueVisitors),
+    eventsPerSecond: readNumber(source.events_per_second ?? source.eventsPerSecond),
+  };
+}
+
+function mapAnalyticsSummary(source: RawRecord): AnalyticsSummary {
+  return {
+    linkId: String(source.link_id ?? source.linkId ?? ''),
+    clicks: readNumber(source.clicks),
+    uniqueVisitors: readNumber(source.unique_visitors ?? source.uniqueVisitors),
+    botClicks: readNumber(source.bot_clicks ?? source.botClicks),
+    from: normalizeOptionalString(source.from),
+    to: normalizeOptionalString(source.to),
+  };
+}
+
+function mapAnalyticsTimeseriesPoint(source: RawRecord): AnalyticsTimeseriesPoint {
+  return {
+    bucketStart: String(source.bucket_start ?? source.bucketStart ?? ''),
+    clicks: readNumber(source.clicks),
+    uniqueVisitors: readNumber(source.unique_visitors ?? source.uniqueVisitors),
+  };
+}
+
+function mapAnalyticsBreakdownItem(source: RawRecord): AnalyticsBreakdownItem {
+  return {
+    name: String(source.name ?? 'unknown'),
+    clicks: readNumber(source.clicks),
+    percentage: readNumber(source.percentage),
+  };
+}
+
+function mapAccessLog(source: RawRecord): AccessLog {
+  return {
+    eventId: String(source.event_id ?? source.eventId ?? ''),
+    occurredAt: String(source.occurred_at ?? source.occurredAt ?? ''),
+    ip: normalizeOptionalString(source.ip),
+    country: normalizeOptionalString(source.country),
+    city: normalizeOptionalString(source.city),
+    deviceType: normalizeOptionalString(source.device_type ?? source.deviceType),
+    browser: normalizeOptionalString(source.browser),
+    referrer: normalizeOptionalString(source.referrer),
+  };
+}
+
+function mapRiskAlert(source: RawRecord): RiskAlert {
+  return {
+    id: String(source.id ?? ''),
+    linkId: String(source.link_id ?? source.linkId ?? ''),
+    shortUrl: String(source.short_url ?? source.shortUrl ?? ''),
+    title: String(source.title ?? 'Untitled alert'),
+    riskLevel: String(source.risk_level ?? source.riskLevel ?? 'unknown') as RiskAlert['riskLevel'],
+    riskScore: readNumber(source.risk_score ?? source.riskScore),
+    reason: Array.isArray(source.reasons) ? source.reasons.map(String) : [],
+    detectedAt: String(source.detected_at ?? source.detectedAt ?? ''),
+    status: String(source.status ?? 'pending') as RiskAlert['status'],
+    reporter: String(source.reporter ?? 'system'),
+  };
+}
+
+function mapRiskScanTask(source: RawRecord): RiskScanTask {
+  return {
+    taskId: String(source.task_id ?? source.taskId ?? ''),
+    linkId: normalizeOptionalString(source.link_id ?? source.linkId),
+    longUrl: normalizeOptionalString(source.long_url ?? source.longUrl),
+    status: String(source.status ?? 'unknown'),
+    createdAt: normalizeOptionalString(source.created_at ?? source.createdAt),
+  };
+}
+
+function mapBackendHealth(source: RawRecord): BackendHealth {
+  return {
+    status: String(source.status ?? 'UNKNOWN'),
+    components: source.components && typeof source.components === 'object' ? source.components as Record<string, unknown> : undefined,
+    services: source.services && typeof source.services === 'object' ? source.services as Record<string, unknown> : undefined,
+    checkedAt: normalizeOptionalString(source.checked_at ?? source.checkedAt),
+  };
+}
+
+function mapWsToken(source: RawRecord): WsTokenResponse {
+  return {
+    token: String(source.token ?? ''),
+    expiresAt: String(source.expires_at ?? source.expiresAt ?? ''),
+  };
+}
+
 function mapLinkPageMeta(meta?: Record<string, unknown>, fallbackParams?: LinkListParams): LinkPageMeta {
   const pageSource = meta?.page && typeof meta.page === 'object' ? meta.page as RawRecord : {};
 
@@ -697,7 +994,11 @@ function mapLinkPageMeta(meta?: Record<string, unknown>, fallbackParams?: LinkLi
   };
 }
 
-function buildQueryPath(path: string, params: Record<string, string | number | undefined>): string {
+function mapPageMeta(meta?: Record<string, unknown>, fallbackParams?: { page?: number; size?: number }): PageMeta {
+  return mapLinkPageMeta(meta, fallbackParams);
+}
+
+function buildQueryPath(path: string, params: Record<string, string | number | boolean | undefined | null>): string {
   const searchParams = new URLSearchParams();
 
   Object.entries(params).forEach(([key, value]) => {
@@ -711,20 +1012,32 @@ function buildQueryPath(path: string, params: Record<string, string | number | u
 }
 
 function buildLinkListPath(params: LinkListParams = {}): string {
+  const sort = params.sort?.startsWith('slug,')
+    ? params.sort.replace('slug,', 'back_half,')
+    : params.sort;
+
   return buildQueryPath('/api/v1/links', {
     page: params.page ?? 1,
     size: params.size ?? 20,
     status: params.status && params.status !== 'all' ? params.status : undefined,
     search: params.search?.trim(),
-    sort: params.sort ?? 'created_at,desc',
+    sort: sort ?? 'created_at,desc',
   });
+}
+
+function buildRangeParams(params: { from?: string; to?: string; granularity?: string } = {}) {
+  return {
+    from: params.from,
+    to: params.to,
+    granularity: params.granularity,
+  };
 }
 
 function serializeCreateLinkPayload(payload: CreateLinkPayload): RawRecord {
   return {
     long_url: payload.originalUrl,
-    title: payload.title.trim() || buildDefaultTitle(payload.originalUrl),
-    custom_slug: payload.customSlug?.trim() || undefined,
+    title: payload.title?.trim() || undefined,
+    custom_back_half: payload.customSlug?.trim() || undefined,
     channel: payload.channel?.trim() || undefined,
     expires_at: toIsoDate(payload.expiresAt),
     tags: payload.tags ?? [],
@@ -736,7 +1049,7 @@ function serializeUpdateLinkPayload(payload: UpdateLinkPayload): RawRecord {
   return {
     long_url: payload.originalUrl?.trim() || undefined,
     title: payload.title?.trim() || undefined,
-    custom_slug: payload.customSlug?.trim() || undefined,
+    custom_back_half: payload.customSlug?.trim() || undefined,
     channel: payload.channel?.trim() || undefined,
     expires_at: payload.expiresAt === null ? null : toIsoDate(payload.expiresAt),
     tags: payload.tags,
@@ -775,11 +1088,13 @@ export const api = {
   config: {
     mode: 'live',
     baseUrl: apiBaseUrl,
+    wsBaseUrl,
   },
   capabilities: backendCapabilities,
 
   async getBackendHealth(): Promise<BackendHealth> {
-    return request<BackendHealth>('/actuator/health');
+    const data = await request<RawRecord>('/api/v1/monitoring/health');
+    return mapBackendHealth(data);
   },
 
   async register(payload: RegisterPayload): Promise<AuthUser> {
@@ -853,6 +1168,34 @@ export const api = {
     return mapLink(data);
   },
 
+  async previewLinkTitle(originalUrl: string): Promise<TitlePreviewResponse> {
+    const data = await request<RawRecord>('/api/v1/links/title-preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        long_url: originalUrl,
+      }),
+    });
+
+    return mapTitlePreview(data);
+  },
+
+  async getSlugRecommendations(payload: {
+    originalUrl: string;
+    title?: string;
+    limit?: number;
+  }): Promise<SlugRecommendationResponse> {
+    const data = await request<RawRecord>('/api/v1/links/slug-recommendations', {
+      method: 'POST',
+      body: JSON.stringify({
+        long_url: payload.originalUrl,
+        title: payload.title?.trim() || undefined,
+        limit: payload.limit ?? 8,
+      }),
+    });
+
+    return mapSlugRecommendations(data);
+  },
+
   async updateLink(id: string, payload: UpdateLinkPayload): Promise<Link> {
     const data = await request<RawRecord>(`/api/v1/links/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -881,9 +1224,37 @@ export const api = {
     return requestBlob(`/api/v1/links/${encodeURIComponent(id)}/qrcode?format=png&size=${size}`);
   },
 
-  async getDashboardStats(): Promise<DashboardStats> {
-    const data = await request<RawRecord>('/api/v1/dashboard/summary');
+  async getLinkQrCodeAsset(id: string, size = 512): Promise<QrCodeAssetResponse | null> {
+    const data = await request<RawRecord | null>(`/api/v1/links/${encodeURIComponent(id)}/qrcode/asset?format=png&size=${size}`);
+    return data ? mapQrCodeAsset(data) : null;
+  },
+
+  async getDashboardStats(params: { from?: string; to?: string } = {}): Promise<DashboardStats> {
+    const data = await request<RawRecord>(buildQueryPath('/api/v1/dashboard/summary', params));
     return mapDashboardStats(data);
+  },
+
+  async getDashboardTrends(params: { granularity?: string; from?: string; to?: string } = {}): Promise<DashboardTrendPoint[]> {
+    const data = await request<RawRecord[]>(buildQueryPath('/api/v1/dashboard/trends', {
+      ...buildRangeParams(params),
+      granularity: params.granularity ?? '1h',
+    }));
+    return (Array.isArray(data) ? data : []).map(mapDashboardTrendPoint);
+  },
+
+  async getDashboardChannels(params: { from?: string; to?: string } = {}): Promise<DashboardBreakdownItem[]> {
+    const data = await request<RawRecord[]>(buildQueryPath('/api/v1/dashboard/channels', params));
+    return (Array.isArray(data) ? data : []).map(mapDashboardBreakdownItem);
+  },
+
+  async getDashboardLocations(params: { from?: string; to?: string } = {}): Promise<DashboardBreakdownItem[]> {
+    const data = await request<RawRecord[]>(buildQueryPath('/api/v1/dashboard/locations', params));
+    return (Array.isArray(data) ? data : []).map(mapDashboardBreakdownItem);
+  },
+
+  async getRealtimeOverview(window = '15m'): Promise<RealtimeOverview> {
+    const data = await request<RawRecord>(buildQueryPath('/api/v1/analytics/realtime/overview', { window }));
+    return mapRealtimeOverview(data);
   },
 
   async getHotLinks(window = '15m', limit = 10): Promise<Link[]> {
@@ -892,11 +1263,139 @@ export const api = {
     return (Array.isArray(data) ? data : []).map(mapLink);
   },
 
-  async getAlerts(): Promise<Alert[]> {
-    throw new ApiFeatureUnavailableError('alerts', backendCapabilities.alerts.summary);
+  async getLinkAnalyticsSummary(id: string, params: { from?: string; to?: string } = {}): Promise<AnalyticsSummary> {
+    const data = await request<RawRecord>(buildQueryPath(`/api/v1/links/${encodeURIComponent(id)}/analytics/summary`, params));
+    return mapAnalyticsSummary(data);
   },
 
-  async updateAlert(_id: string, _status: 'approved' | 'blocked' | 'blacklisted'): Promise<Alert> {
-    throw new ApiFeatureUnavailableError('alerts.review', backendCapabilities.alerts.summary);
+  async getLinkAnalyticsTimeseries(id: string, params: { granularity?: string; from?: string; to?: string } = {}): Promise<AnalyticsTimeseriesPoint[]> {
+    const data = await request<RawRecord[]>(buildQueryPath(`/api/v1/links/${encodeURIComponent(id)}/analytics/timeseries`, {
+      ...buildRangeParams(params),
+      granularity: params.granularity ?? '1h',
+    }));
+    return (Array.isArray(data) ? data : []).map(mapAnalyticsTimeseriesPoint);
+  },
+
+  async getLinkAnalyticsDevices(id: string, params: { from?: string; to?: string } = {}): Promise<AnalyticsBreakdownItem[]> {
+    const data = await request<RawRecord[]>(buildQueryPath(`/api/v1/links/${encodeURIComponent(id)}/analytics/devices`, params));
+    return (Array.isArray(data) ? data : []).map(mapAnalyticsBreakdownItem);
+  },
+
+  async getLinkAnalyticsBrowsers(id: string, params: { from?: string; to?: string } = {}): Promise<AnalyticsBreakdownItem[]> {
+    const data = await request<RawRecord[]>(buildQueryPath(`/api/v1/links/${encodeURIComponent(id)}/analytics/browsers`, params));
+    return (Array.isArray(data) ? data : []).map(mapAnalyticsBreakdownItem);
+  },
+
+  async getLinkAnalyticsLocations(id: string, params: { from?: string; to?: string } = {}): Promise<AnalyticsBreakdownItem[]> {
+    const data = await request<RawRecord[]>(buildQueryPath(`/api/v1/links/${encodeURIComponent(id)}/analytics/locations`, params));
+    return (Array.isArray(data) ? data : []).map(mapAnalyticsBreakdownItem);
+  },
+
+  async getLinkAccessLogs(id: string, params: { page?: number; size?: number } = {}): Promise<{ items: AccessLog[]; page: PageMeta }> {
+    const result = await requestWithMeta<RawRecord[]>(buildQueryPath(`/api/v1/links/${encodeURIComponent(id)}/access-logs`, {
+      page: params.page ?? 1,
+      size: params.size ?? 50,
+    }));
+
+    return {
+      items: (Array.isArray(result.data) ? result.data : []).map(mapAccessLog),
+      page: mapPageMeta(result.meta, params),
+    };
+  },
+
+  async getAlerts(params: RiskAlertListParams = {}): Promise<RiskAlertListResponse> {
+    const result = await requestWithMeta<RawRecord[]>(buildQueryPath('/api/v1/risk/alerts', {
+      page: params.page ?? 1,
+      size: params.size ?? 20,
+      risk_level: params.riskLevel && params.riskLevel !== 'all' ? params.riskLevel : undefined,
+      status: params.status && params.status !== 'all' ? params.status : undefined,
+      search: params.search?.trim(),
+    }));
+
+    return {
+      items: (Array.isArray(result.data) ? result.data : []).map(mapRiskAlert),
+      page: mapPageMeta(result.meta, params),
+    };
+  },
+
+  async getRiskAlert(id: string): Promise<RiskAlert> {
+    const data = await request<RawRecord>(`/api/v1/risk/alerts/${encodeURIComponent(id)}`);
+    return mapRiskAlert(data);
+  },
+
+  async createRiskScanTask(payload: { linkId?: string; longUrl?: string }): Promise<RiskScanTask> {
+    const data = await request<RawRecord>('/api/v1/risk/scan/tasks', {
+      method: 'POST',
+      body: JSON.stringify({
+        link_id: payload.linkId,
+        long_url: payload.longUrl,
+      }),
+    });
+    return mapRiskScanTask(data);
+  },
+
+  async getRiskScanTask(id: string): Promise<RiskScanTask> {
+    const data = await request<RawRecord>(`/api/v1/risk/scan/tasks/${encodeURIComponent(id)}`);
+    return mapRiskScanTask(data);
+  },
+
+  async updateAlert(id: string, status: 'approved' | 'blocked' | 'blacklisted', comment?: string): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>(`/api/v1/admin/risk/alerts/${encodeURIComponent(id)}/review`, {
+      method: 'POST',
+      body: JSON.stringify({
+        action: status,
+        comment,
+      }),
+    });
+  },
+
+  async blacklistDomain(payload: { domain: string; reason?: string }): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>('/api/v1/admin/risk/blacklist/domain', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async blacklistUrl(payload: { url: string; reason?: string }): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>('/api/v1/admin/risk/blacklist/url', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getMonitoringHealth(): Promise<BackendHealth> {
+    const data = await request<RawRecord>('/api/v1/monitoring/health');
+    return mapBackendHealth(data);
+  },
+
+  async getMonitoringServices(): Promise<Record<string, MonitoringServiceStatus>> {
+    return request<Record<string, MonitoringServiceStatus>>('/api/v1/monitoring/services');
+  },
+
+  async getMonitoringRedis(): Promise<MonitoringServiceStatus> {
+    return request<MonitoringServiceStatus>('/api/v1/monitoring/redis');
+  },
+
+  async getMonitoringKafka(): Promise<MonitoringServiceStatus> {
+    return request<MonitoringServiceStatus>('/api/v1/monitoring/kafka');
+  },
+
+  async getMonitoringRabbitmq(): Promise<MonitoringServiceStatus> {
+    return request<MonitoringServiceStatus>('/api/v1/monitoring/rabbitmq');
+  },
+
+  async getMonitoringFlinkJobs(): Promise<MonitoringServiceStatus> {
+    return request<MonitoringServiceStatus>('/api/v1/monitoring/flink/jobs');
+  },
+
+  async getMonitoringMetricTimeseries(metric = 'qps', window = '1h'): Promise<Array<Record<string, unknown>>> {
+    return request<Array<Record<string, unknown>>>(buildQueryPath('/api/v1/monitoring/metrics/timeseries', { metric, window }));
+  },
+
+  async getWsToken(): Promise<WsTokenResponse> {
+    const data = await request<RawRecord>('/api/v1/ws/token', {
+      method: 'POST',
+    });
+    return mapWsToken(data);
   },
 };

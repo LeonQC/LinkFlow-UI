@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { ArrowLeft, Copy, ExternalLink, QrCode, Save, Trash2 } from 'lucide-react';
+import { ArrowLeft, BarChart3, Copy, ExternalLink, QrCode, Save, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { BackendCapabilityAlert } from '../components/backend-capability-alert';
 import { EmptyState } from '../components/empty-state';
@@ -10,7 +10,7 @@ import { Card } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Skeleton } from '../components/ui/skeleton';
-import { useDeleteLink, useLink, useUpdateLink, useUpdateLinkStatus } from '../hooks/use-links';
+import { useDeleteLink, useLink, useLinkAccessLogs, useLinkAnalytics, useUpdateLink, useUpdateLinkStatus } from '../hooks/use-links';
 import { backendCapabilities, formatShortUrl, resolveShortUrl, type LinkStatus } from '../services/linkflow-api';
 
 function toDateTimeInput(value?: string) {
@@ -33,6 +33,8 @@ export function LinkDetailPageLive() {
   const updateLink = useUpdateLink();
   const updateStatus = useUpdateLinkStatus();
   const deleteLink = useDeleteLink();
+  const analytics = useLinkAnalytics(id);
+  const accessLogs = useLinkAccessLogs(id, 1, 50);
   const [qrOpen, setQrOpen] = useState(false);
   const [form, setForm] = useState({
     title: '',
@@ -51,7 +53,7 @@ export function LinkDetailPageLive() {
     setForm({
       title: link.title,
       originalUrl: link.originalUrl,
-      customSlug: link.slug ?? '',
+      customSlug: link.backHalf ?? link.slug ?? '',
       channel: link.channel ?? '',
       expiresAt: toDateTimeInput(link.expiresAt),
       status: link.status,
@@ -149,7 +151,7 @@ export function LinkDetailPageLive() {
 
       <BackendCapabilityAlert
         title="Backend integration"
-        description={`${backendCapabilities.linkDetail.summary} ${backendCapabilities.linkUpdate.summary} ${backendCapabilities.linkStatus.summary}`}
+        description={`${backendCapabilities.linkDetail.summary} ${backendCapabilities.linkUpdate.summary} ${backendCapabilities.linkAnalytics.summary}`}
         tone="success"
       />
 
@@ -207,7 +209,7 @@ export function LinkDetailPageLive() {
             <Input id="detail-title" value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="detail-slug">Custom slug</Label>
+            <Label htmlFor="detail-slug">Custom back-half</Label>
             <Input id="detail-slug" value={form.customSlug} onChange={(event) => setForm((current) => ({ ...current, customSlug: event.target.value }))} />
           </div>
           <div className="space-y-2 md:col-span-2">
@@ -249,6 +251,107 @@ export function LinkDetailPageLive() {
             {updateStatus.isPending ? 'Updating...' : 'Update status'}
           </Button>
         </div>
+      </Card>
+
+      <Card className="p-6 space-y-5">
+        <div>
+          <h2 className="text-lg font-semibold text-[#111827]">Analytics</h2>
+          <p className="mt-1 text-sm text-[#6B7280]">Live link analytics from /api/v1/links/{'{link_id}'}/analytics.</p>
+        </div>
+
+        {analytics.summary.isLoading ? (
+          <Skeleton className="h-24 w-full" />
+        ) : analytics.summary.isError ? (
+          <EmptyState
+            title="Analytics summary is unavailable"
+            description={analytics.summary.error instanceof Error ? analytics.summary.error.message : 'The backend returned an analytics error.'}
+            icon={BarChart3}
+          />
+        ) : (
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="rounded-lg border border-[#E5E7EB] p-4">
+              <p className="text-sm text-[#6B7280]">Clicks</p>
+              <p className="mt-2 text-2xl font-semibold text-[#111827]">{(analytics.summary.data?.clicks ?? 0).toLocaleString()}</p>
+            </div>
+            <div className="rounded-lg border border-[#E5E7EB] p-4">
+              <p className="text-sm text-[#6B7280]">Unique visitors</p>
+              <p className="mt-2 text-2xl font-semibold text-[#111827]">{(analytics.summary.data?.uniqueVisitors ?? 0).toLocaleString()}</p>
+            </div>
+            <div className="rounded-lg border border-[#E5E7EB] p-4">
+              <p className="text-sm text-[#6B7280]">Bot clicks</p>
+              <p className="mt-2 text-2xl font-semibold text-[#111827]">{(analytics.summary.data?.botClicks ?? 0).toLocaleString()}</p>
+            </div>
+          </div>
+        )}
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-lg border border-[#E5E7EB] p-4">
+            <h3 className="font-medium text-[#111827]">Timeseries</h3>
+            {(analytics.timeseries.data ?? []).length === 0 ? (
+              <p className="mt-3 text-sm text-[#6B7280]">No timeseries data yet.</p>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {(analytics.timeseries.data ?? []).slice(0, 6).map((point) => (
+                  <div key={point.bucketStart} className="flex justify-between text-sm text-[#6B7280]">
+                    <span>{point.bucketStart ? new Date(point.bucketStart).toLocaleString() : 'Unknown bucket'}</span>
+                    <span>{point.clicks} clicks · {point.uniqueVisitors} visitors</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-[#E5E7EB] p-4">
+            <h3 className="font-medium text-[#111827]">Breakdowns</h3>
+            {[
+              ['Devices', analytics.devices.data ?? []],
+              ['Browsers', analytics.browsers.data ?? []],
+              ['Locations', analytics.locations.data ?? []],
+            ].map(([label, items]) => (
+              <div key={String(label)} className="mt-3">
+                <p className="text-sm font-medium text-[#111827]">{String(label)}</p>
+                {(items as Array<{ name: string; clicks: number; percentage: number }>).length === 0 ? (
+                  <p className="text-sm text-[#6B7280]">No data.</p>
+                ) : (
+                  <div className="mt-1 space-y-1">
+                    {(items as Array<{ name: string; clicks: number; percentage: number }>).slice(0, 4).map((item) => (
+                      <div key={`${label}-${item.name}`} className="flex justify-between text-sm text-[#6B7280]">
+                        <span>{item.name}</span>
+                        <span>{item.clicks} · {item.percentage}%</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      <Card className="p-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-[#111827]">Access logs</h2>
+          <p className="mt-1 text-sm text-[#6B7280]">Empty logs are expected until redirect events are recorded.</p>
+        </div>
+        {accessLogs.isLoading ? (
+          <Skeleton className="h-20 w-full" />
+        ) : accessLogs.isError ? (
+          <EmptyState
+            title="Access logs are unavailable"
+            description={accessLogs.error instanceof Error ? accessLogs.error.message : 'The backend returned an access log error.'}
+            icon={BarChart3}
+          />
+        ) : (accessLogs.data?.items ?? []).length === 0 ? (
+          <p className="rounded-lg bg-[#F9FAFB] p-4 text-sm text-[#6B7280]">No access logs yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {(accessLogs.data?.items ?? []).slice(0, 8).map((log) => (
+              <div key={log.eventId} className="rounded-lg border border-[#E5E7EB] p-3 text-sm text-[#6B7280]">
+                {log.occurredAt ? new Date(log.occurredAt).toLocaleString() : 'Unknown time'} · {log.ip ?? 'unknown IP'} · {log.browser ?? 'unknown browser'}
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       <LiveLinkQrDialog
