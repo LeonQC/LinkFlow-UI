@@ -24,6 +24,17 @@ export function RootLayoutLive() {
 
     const userRole = localStorage.getItem('userRole');
     setIsAdmin(userRole === 'admin');
+
+    void api.me()
+      .then((user) => {
+        localStorage.setItem('userName', user.username);
+        localStorage.setItem('userEmail', user.email);
+        localStorage.setItem('userRole', user.role);
+        setIsAdmin(user.role === 'admin');
+      })
+      .catch(() => {
+        // The API client already handles expired sessions by clearing tokens and redirecting.
+      });
   }, [navigate]);
 
   const handleLogout = () => {

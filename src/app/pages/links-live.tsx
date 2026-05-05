@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+﻿import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Copy, ExternalLink, Link2, Plus, QrCode, Search } from 'lucide-react';
 import { toast } from 'sonner';
@@ -18,15 +18,26 @@ import {
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Skeleton } from '../components/ui/skeleton';
-import { useCreateLink, useLinks } from '../hooks/use-links';
+import { useCreateLink, useLinks, usePreviewLinkTitle, useSlugRecommendations } from '../hooks/use-links';
 import { backendCapabilities, formatShortUrl, resolveShortUrl, type Link, type LinkStatus } from '../services/linkflow-api';
 
 const statusOptions: Array<LinkStatus | 'all'> = ['all', 'active', 'paused', 'expired', 'blocked'];
-const sortOptions = ['created_at,desc', 'created_at,asc', 'click_count,desc', 'title,asc'];
+const sortOptions = ['created_at,desc', 'created_at,asc', 'title,asc', 'back_half,asc', 'channel,asc', 'status,asc'];
+
+function isPreviewableUrl(value: string) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 export function LinksPageLive() {
   const navigate = useNavigate();
   const createLink = useCreateLink();
+  const titlePreview = usePreviewLinkTitle();
+  const slugRecommendations = useSlugRecommendations();
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(20);
   const [status, setStatus] = useState<LinkStatus | 'all'>('all');
@@ -42,6 +53,9 @@ export function LinksPageLive() {
     channel: '',
     expiresAt: '',
   });
+  const [slugSuggestions, setSlugSuggestions] = useState<string[]>([]);
+  const lastAutoTitle = useRef('');
+  const lastPreviewUrl = useRef('');
 
   const { data: linkResult, isLoading, isFetching, isError, error } = useLinks({
     page,
@@ -55,6 +69,52 @@ export function LinksPageLive() {
 
   const resetPage = () => setPage(1);
 
+  useEffect(() => {
+    const originalUrl = form.originalUrl.trim();
+    if (!originalUrl) {
+      lastPreviewUrl.current = '';
+      lastAutoTitle.current = '';
+      return;
+    }
+
+    if (!isPreviewableUrl(originalUrl) || originalUrl === lastPreviewUrl.current) {
+      return;
+    }
+
+    if (form.title.trim() && form.title !== lastAutoTitle.current) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      lastPreviewUrl.current = originalUrl;
+      titlePreview.mutateAsync(originalUrl)
+        .then((preview) => {
+          const nextTitle = preview.title.trim();
+          if (!nextTitle) {
+            return;
+          }
+
+          setForm((current) => {
+            if (current.originalUrl.trim() !== originalUrl) {
+              return current;
+            }
+
+            if (current.title.trim() && current.title !== lastAutoTitle.current) {
+              return current;
+            }
+
+            lastAutoTitle.current = nextTitle;
+            return { ...current, title: nextTitle };
+          });
+        })
+        .catch(() => {
+          lastPreviewUrl.current = '';
+        });
+    }, 700);
+
+    return () => window.clearTimeout(timeout);
+  }, [form.originalUrl, form.title, titlePreview]);
+
   const handleCreate = async () => {
     if (!form.originalUrl.trim()) {
       toast.error('Original URL is required.');
@@ -63,15 +123,32 @@ export function LinksPageLive() {
 
     await createLink.mutateAsync({
       originalUrl: form.originalUrl.trim(),
-      title: form.title.trim(),
+      title: form.title.trim() || undefined,
       customSlug: form.customSlug.trim() || undefined,
       channel: form.channel.trim() || undefined,
       expiresAt: form.expiresAt || undefined,
     });
 
     setForm({ originalUrl: '', title: '', customSlug: '', channel: '', expiresAt: '' });
+    setSlugSuggestions([]);
+    lastPreviewUrl.current = '';
+    lastAutoTitle.current = '';
     setCreateOpen(false);
     resetPage();
+  };
+
+  const handleRecommendSlug = async () => {
+    if (!form.originalUrl.trim()) {
+      toast.error('Original URL is required before back-half recommendations.');
+      return;
+    }
+
+    const result = await slugRecommendations.mutateAsync({
+      originalUrl: form.originalUrl.trim(),
+      title: form.title.trim() || undefined,
+      limit: 8,
+    });
+    setSlugSuggestions(result.suggestions.filter((item) => item.available).map((item) => item.slug));
   };
 
   const handleCopy = async (shortUrl: string) => {
@@ -109,7 +186,7 @@ export function LinksPageLive() {
                 setSearchQuery(event.target.value);
                 resetPage();
               }}
-              placeholder="Search title, slug, or URL"
+              placeholder="Search title, back-half, or URL"
               className="pl-10"
             />
           </div>
@@ -259,23 +336,13 @@ export function LinksPageLive() {
           <DialogHeader>
             <DialogTitle>Create short URL</DialogTitle>
             <DialogDescription>
-              This form calls POST /api/v1/links with the current backend payload.
+              Paste a destination URL. LinkFlow will suggest a title and create a short link.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label htmlFor="link-title">Title</Label>
-              <Input
-                id="link-title"
-                value={form.title}
-                onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
-                placeholder="Spring Campaign"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="original-url">Original URL</Label>
+              <Label htmlFor="original-url">Destination URL</Label>
               <Input
                 id="original-url"
                 type="url"
@@ -286,15 +353,55 @@ export function LinksPageLive() {
               />
             </div>
 
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="link-title">Title</Label>
+                {titlePreview.isPending ? (
+                  <span className="text-xs text-[#6B7280]">Finding title...</span>
+                ) : null}
+              </div>
+              <Input
+                id="link-title"
+                value={form.title}
+                onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
+                placeholder="A title will be suggested after you enter a destination URL."
+              />
+            </div>
+
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="custom-slug">Custom slug</Label>
+                <div className="flex items-center justify-between gap-3">
+                  <Label htmlFor="custom-slug">Custom back-half</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleRecommendSlug()}
+                    disabled={slugRecommendations.isPending}
+                  >
+                    {slugRecommendations.isPending ? 'Loading...' : 'Recommend'}
+                  </Button>
+                </div>
                 <Input
                   id="custom-slug"
                   value={form.customSlug}
                   onChange={(event) => setForm((current) => ({ ...current, customSlug: event.target.value }))}
                   placeholder="promo2026"
                 />
+                {slugSuggestions.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {slugSuggestions.map((slug) => (
+                      <button
+                        key={slug}
+                        type="button"
+                        onClick={() => setForm((current) => ({ ...current, customSlug: slug }))}
+                        className="rounded-md border border-[#DBEAFE] bg-[#EFF6FF] px-2 py-1 text-xs text-[#1D4ED8]"
+                      >
+                        {slug}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <div className="space-y-2">
@@ -324,7 +431,7 @@ export function LinksPageLive() {
               Cancel
             </Button>
             <Button onClick={() => void handleCreate()} className="bg-[#2563EB] hover:bg-[#1D4ED8]" disabled={createLink.isPending}>
-              {createLink.isPending ? 'Creating...' : 'Create with Backend'}
+              {createLink.isPending ? 'Creating...' : 'Create short link'}
             </Button>
           </DialogFooter>
         </DialogContent>
